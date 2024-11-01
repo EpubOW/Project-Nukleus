@@ -1,0 +1,703 @@
+{% extends 'base.html' %}
+{% block baseStyles %}
+    <!-- <link href="../css/main_page_styles.css"  rel="stylesheet" /> -->
+{% endblock %}
+
+{%block main%}
+
+<div id="container" class="container">
+    <div class="row">
+        <div class="col-6 img-info" style="height: 500px;">
+            <div class="w-100 h-100" style="position: relative">
+                <img id="camera_img" src="../img/image.png" alt="" class="placeholer_image">
+                <canvas id="canvas" class="markup_area"></canvas>
+                <canvas id="canvas_draw" class="markup_area"></canvas>
+                <!-- <an-1> -->
+                <div id="popup-info" class="popup-info" style="position: absolute;"></div>  
+                <!-- </an-1> -->
+                  
+            </div>
+        </div>
+        <div class="col-6">
+            <div class="row">
+                <div class="col-4">
+                    <label for="imageInput" class="btn btn-secondary">
+                        Загрузить файл
+                    </label>
+                    <input type="file" id="imageInput" accept="image/*" onchange="displayImage(this)"/>
+                    <!-- <button class="btn btn-secondary" onclick="addImage()"> -->
+                    <!-- </button> -->
+                </div>
+                <div class="col-4">
+                    <button class="btn btn-secondary" onclick="addBox()">Добавить метку</button>
+                </div>
+            </div>
+            <div class="row">
+                <div class="box-list">
+                    <table id="table-list" class="table-list">
+                        <tr style="background-color: rgb(227, 221, 217); border-radius: 15px;">
+                            <td></td>
+                            <td>Название метки</td>
+                            <td>Текст метки</td>
+                            <td></td>
+                        </tr>
+                    </table>
+                </div>    
+            </div>
+            <div class="row">
+                <div class="col-8">
+                    <div class="d-flex justify-content-center">
+                        <button class="btn btn-secondary" onclick="saveBoxes()">Сохранить</button>
+                    </div>
+                    
+                </div>
+            </div>
+        </div>
+    </div>
+
+</div>
+
+{%endblock%}
+
+{%block baseScripts%}
+<script>
+    // let boxes = new Map();
+
+    let canvas = document.getElementById('canvas');
+    let canvasDraw = document.getElementById('canvas_draw');
+    let defaultColor = 'rgb(255,169,84)';
+    let highlightColor = 'rgb(194,20,10)';
+    let textColor = '#000';
+
+    let ctx = null;
+    let ctxDraw = null;
+    if (canvas.getContext) {
+        console.log('getContext');
+        ctx = canvas.getContext("2d");
+    }
+    if (canvasDraw.getContext) {
+        console.log('getContext');
+        ctxDraw = canvasDraw.getContext("2d");
+    }
+
+
+    let rectDots = [];
+    let rectDrawn = false;
+    // let viewBoxes = [];
+    let editBoxBool = false;
+    let resp = null;
+    let fieldsChanged = false;
+    let camMatrix = []
+
+    let id_boxes = [];
+    let currentBoxID = null;
+    let boxes = new Map();
+    let textDrawn = false;
+
+
+    // const img = new Image();
+    // img.onload = function() {
+    // // alert(this.width + 'x' + this.height);
+    // }
+    // img.src = 'http://www.google.com/intl/en_ALL/images/logo.gif';
+    async function delBox(key) {
+        console.log('delBox')
+        if (!Number.isInteger(key)) key = key.id
+
+        if (Number.isInteger(key)){
+            let data = JSON.stringify({
+                'box_id': key,
+            })
+            let response = await fetch('http://localhost:4999/delBox',{
+                credentials: "include",
+                method: "POST", 
+                cors: "no-cors",
+                headers: {
+                    'Content-Type': 'application/json;charset=utf-8',
+                },
+                body: data
+            }).then((response) => response.json())
+            .then((response) => {
+                if (response['status']) {
+                    hideTable(key)
+                }
+                else {
+                    alert('Ошибка удаления')
+                }
+            })
+        }
+        else{
+            hideTable(key)
+        }
+    }
+    function hideTable(key){
+        let box = boxes.get(key)
+        var index = id_boxes.indexOf(box[3]);
+        if (index !== -1) {
+            id_boxes.splice(index, 1);
+        }
+        boxes.delete(key)
+        $(`#${key}`).remove()
+        console.log('size', boxes.size)
+        if (boxes.size === 0) $('.box-list').hide()
+        redrawCanvas(key)
+    }
+    async function fetchBox(key, val) {
+        console.log('fetchBox')
+        let promise_data = await new Promise((resolve, reject) => {
+            try{
+                let data = JSON.stringify({
+                    'box_id': key,
+                    'name': val[0],
+                    'description': val[1],
+                    'x1': val[2][0][0],
+                    'y1': val[2][0][1],
+                    'x2': val[2][0][2],
+                    'y2': val[2][0][3],
+                })
+                console.log('try')
+                resolve(data)
+            } catch(error){
+                console.log('error', error)
+                if (error instanceof TypeError){
+                    reject('error')
+                }
+            }
+        }).then(data => {
+            return data;
+        },
+        reject => {
+            alert('Заполните все поля и укажите координаты')
+            return null;
+        })   
+
+        console.log('data', promise_data)
+        if (promise_data){
+            let response = await fetch('http://localhost:4999/addBox', {
+                credentials: "include",
+                method: "POST", 
+                cors: "no-cors",
+                headers: {
+                    'Content-Type': 'application/json;charset=utf-8',
+                },
+                body: promise_data
+            })
+            .then((response) => response.json())
+            .then((response) => {
+                // console.log('response', response)
+                if (response['status'] === true) {
+                    console.log('success')
+                    return 'success'
+                }
+                else{
+                    console.log('resp', response['status'])
+                    return 'error'
+                }
+            })
+            return response;
+        }
+        return null;
+    }
+
+    async function saveBoxes() {
+        for (let box of boxes){
+            key = box[0]
+            val = box[1]
+            console.log(key, val)
+            let response = await fetchBox(key, val)
+            console.log('resp', response)
+            if (!response) break
+        }
+    }
+
+    // async function saveBox(local_id){
+    //     boxes.set()
+
+    //     let data = JSON.stringify({
+    //         'name': 
+    //     })
+    //     await 
+    // }
+
+    function addBox(box_id=null, name='', description='', coords=null) {
+        $('.box-list')[0].style.display = 'block'
+        console.log('addBox')
+        let id = 1
+        if (id_boxes.length !== 0){
+            id = id_boxes.slice(-1)[0] + 1
+        }
+        if (!box_id) box_id = `new_box${id}`
+        id_boxes.push(id)
+        console.log(id)
+        console.log('descr', description)
+        $('#table-list').append(`
+            <tr id='${box_id}'>
+                <td>${id}</td>
+                <td>
+                    <input class="inputField" onclick="editBox(${box_id})" onchange="changeCurBox(${box_id}, 'name', this)" type="text" placeholder="Название" value='${name}''>
+                </td>
+                <td>
+                    <input class="inputField" onclick="editBox(${box_id})" onchange="changeCurBox(${box_id}, 'desc', this)" type="textarea" placeholder="Текст метки" value='${description}'>
+                </td>
+                <td>
+                    <button class="btn btn-danger" onclick="delBox(${box_id})">Удл</button>
+                </td>
+            </tr>
+        `)
+        boxes.set(box_id, [name, description, [coords], id])
+        editBoxBool = true;
+        currentBoxID = box_id;
+        $(`#${currentBoxID}`).css('background-color', 'rgb(227,221,217)')
+        if (coords){
+            console.log(coords)
+            setRectDots(coords);
+            drawRect(ctx);
+            defaultValues();
+            editBoxBool = false;
+            $(`#${currentBoxID}`).css('background-color', 'rgb(240,237,235)')
+        }
+        
+    }
+
+    function changeCurBox(id, type, val){
+        if (!Number.isInteger(id)) id = id.id
+        console.log(id, type, val.value)
+        curBox = boxes.get(id)
+        console.log(curBox)
+        if (type === 'name'){
+            boxes.set(id, [val.value, curBox[1], curBox[2], curBox[3]])
+        }
+        else if (type === 'desc'){
+            boxes.set(id, [curBox[0], val.value, curBox[2], curBox[3]])
+        }
+            
+    }
+
+    function setRectDots(val){
+        let coords = percentToCoords(val);
+        rectDots.push([coords[0], coords[1]]);
+        rectDots.push([coords[2], coords[3]]);
+    }
+
+    function addAllBoxes(){
+        boxes.forEach(function(val, key, map){
+            addBox(id=key, name=val[0], key=val[1], coords=val[2])
+        })
+    }
+
+    function displayImage(inputElement) {
+        const file = inputElement.files[0];
+        const imageURL = URL.createObjectURL(file);
+        document.getElementById('camera_img').src = imageURL;
+        inputElement.value = null;
+        document.getElementById('camera_img').onload = () => URL.revokeObjectURL(imageURL);
+    }
+    function removeBox(currentCtx=ctxDraw){
+        if (rectDots.length > 0){
+            x = Math.min(rectDots[0][0], rectDots[1][0]);
+            y = Math.min(rectDots[0][1], rectDots[1][1]);
+            currentCtx.clearRect(x-2, y-2, Math.abs(rectDots[1][0]-rectDots[0][0])+4, Math.abs(rectDots[1][1] - rectDots[0][1])+4);
+        }
+    }
+    function editBox(key){
+        if (!Number.isInteger(key)) key = key.id
+        console.log('key', key)
+
+        if (editBoxBool){
+            closeBoxTarget()
+        }
+
+        defaultValues();
+            editBoxBool = true;
+            try{
+                val = boxes.get(key)[2][0]
+                console.log('val', val)
+                if (val){
+                    redrawCanvas(key);
+                    let coords = percentToCoords(val);
+                    rectDots.push([coords[0], coords[1]]);
+                    rectDots.push([coords[2], coords[3]]);
+                    drawRect(ctxDraw);
+                    highlightRect(ctxDraw);
+                }
+            } catch (error){
+                console.log(error)
+            }
+            currentBoxID = key
+            $(`#${currentBoxID}`).css('background-color', 'rgb(227,221,217)')
+
+
+        // if (!editBoxBool){
+        //     defaultValues();
+        //     editBoxBool = true;
+        //     try{
+        //         val = boxes.get(key)[2][0]
+        //         console.log('val', val)
+        //         if (val){
+        //             redrawCanvas(key);
+        //             let coords = percentToCoords(val);
+        //             rectDots.push([coords[0], coords[1]]);
+        //             rectDots.push([coords[2], coords[3]]);
+        //             drawRect(ctxDraw);
+        //             highlightRect(ctxDraw);
+        //         }
+        //     } catch (error){
+        //         console.log(error)
+        //     }
+        //     currentBoxID = key
+        // }
+    }
+    // function editBox(){
+    //     console.log('edit')
+    //     if (!editBoxBool) {
+    //         editBoxBool = !editBoxBool;
+    //     }
+        
+    // }
+    function changeButtonsVisibility(visibility, key){
+        if (visibility){
+            $('#clear_rect').css('display', 'none');
+            // $('.editBox').removeAttr('disabled');
+            // $('.delBox').removeAttr('disabled');
+            // $(`#confirm_${key}`).attr('disabled','disabled');
+            // $(`#boxName_${key}`).attr('disabled','disabled');
+        }
+        else if (!visibility){
+            $('#clear_rect').css('display', 'inline-block');
+            // $('.editBox').attr('disabled','disabled');
+            // $('.delBox').attr('disabled','disabled');
+            // $(`#confirm_${key}`).removeAttr('disabled');
+            // $(`#boxName_${key}`).removeAttr('disabled');
+            // $(`#del_${key}`).removeAttr('disabled');
+        }
+    }
+    function percentToCoords(val){
+        let x1 = val[0]/100 * canvas.width;
+        let y1 = val[1]/100 * canvas.height;
+        let x2 = val[2]/100 * canvas.width;
+        let y2 = val[3]/100 * canvas.height;
+        // console.log(val[0], val[1], x1, y1);
+        return [x1, y1, x2, y2];
+
+    }
+    function coordsToPercent(){
+        let x1 = rectDots[0][0]*100 / canvas.width;
+        let y1 = rectDots[0][1]*100 / canvas.height;
+        let x2 = rectDots[1][0]*100 / canvas.width;
+        let y2 = rectDots[1][1]*100 / canvas.height;
+        console.log(x1, y1, x2, y2);
+        return [x1, y1, x2, y2];
+    }
+    function highlightRect(currentCtx=ctxDraw, color = highlightColor){
+        console.log(rectDots);
+        removeBox(currentCtx);
+        drawCircle(currentCtx, rectDots[0][0], rectDots[0][1], color);
+        drawCircle(currentCtx, rectDots[1][0], rectDots[1][1], color);
+        drawRect(currentCtx, color)
+    }
+    function redrawCanvas(key){
+        console.log('redraw', key)
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        boxes.forEach(function(val, key_redraw, map){
+            if (key !== key_redraw){
+                setRectDots(val[2][0]);
+                drawRect(ctx);
+                defaultValues();
+            };
+        })
+    }
+    function drawCircle(currentCtx, x, y, color=defaultColor) {
+        currentCtx.save();  // Сохранение текущего состояния
+        currentCtx.setTransform(1, 0, 0, 1, 0, 0);  // Сброс трансформаций
+        currentCtx.beginPath();
+
+        var radgrad = ctx.createRadialGradient(x,y,0,x,y,60);
+        radgrad.addColorStop(0, color);
+        radgrad.addColorStop(1, color); 
+        radgrad.addColorStop(1, color);
+        currentCtx.fillStyle = radgrad;
+        currentCtx.fillRect(x,y,1,1);
+
+
+        // currentCtx.arc(x+0.5, y+0.5, 1, 0, Math.PI * 2);
+        // currentCtx.strokeStyle = color;
+        // currentCtx.stroke();
+        currentCtx.restore();  // Восстановление состояния после рисования
+    }
+    function drawRect(currentCtx, color=defaultColor, rect_coords=[]){
+        console.log('coords', rect_coords)
+        currentCtx.save();
+        currentCtx.beginPath();
+        if (rect_coords.length > 0){
+            drawCircle(currentCtx, rect_coords[0], rect_coords[1], color);
+            drawCircle(currentCtx, rect_coords[2], rect_coords[3], color);
+            currentCtx.fillStyle=color
+            currentCtx.fillRect(rect_coords[0]+0.5, rect_coords[1]+0.5, rect_coords[2]-rect_coords[0], rect_coords[3] - rect_coords[1]);
+        }
+        else {
+            drawCircle(currentCtx, rectDots[0][0], rectDots[0][1], color);
+            drawCircle(currentCtx, rectDots[1][0], rectDots[1][1], color);
+            currentCtx.rect(rectDots[0][0]+0.5, rectDots[0][1]+0.5, rectDots[1][0]-rectDots[0][0], rectDots[1][1] - rectDots[0][1]);
+        }
+        
+        currentCtx.strokeStyle = color;
+        currentCtx.stroke();
+        currentCtx.restore();
+        rectDrawn = true;
+    }
+    function textWidth(text){
+        return Math.floor(ctx.measureText(text).width)
+    }
+    function drawText(currentCtx, key, color=textColor){
+        if (!textDrawn){
+            console.log('text draw')
+            let rect = canvasDraw.getBoundingClientRect();
+            let scaleX = canvasDraw.width / rect.width;     // Коэффициент масштабирования по X
+            let scaleY = canvasDraw.height / rect.height;   // Коэффициент масштабирования по Y
+            let padding = 1;
+            // let textBalance = "Balance:"+balance;
+
+            let text = boxes.get(key)[1]
+            console.log(text)
+            let coords = percentToCoords(boxes.get(key)[2][0])
+            let w = currentCtx.measureText(text).width
+            let size = 10
+            
+            console.log('w', w)
+            drawRect(ctxDraw, color=defaultColor, rect_coords=[coords[2], coords[1], coords[2]+w, coords[1]+size])
+            currentCtx.save();
+            currentCtx.beginPath();
+            
+            
+            currentCtx.fillStyle = textColor
+            currentCtx.font = `${size}px Roboto`
+            // currentCtx.fillText(text, canvasDraw.width-textWidth(text)-20, canvasDraw.height/10-3);
+            currentCtx.fillText(text, coords[2]+2, coords[1]+size-padding)
+            // currentCtx.strokeStyle = color;
+            currentCtx.stroke();
+            currentCtx.restore();
+            textDrawn = true;
+        }
+        
+        // rectDrawn = true;
+
+        // editBox()
+    }
+    function defaultValues(){
+        rectDots = [];
+        rectDrawn = false;
+    }
+
+    function drawUp(){
+        console.log('drawUp')
+        console.log('drawUp')
+        $('#canvas_draw').click(function(e){
+            let rect = canvasDraw.getBoundingClientRect();  // Получаем размеры канваса относительно окна
+            let scaleX = canvasDraw.width / rect.width;     // Коэффициент масштабирования по X
+            let scaleY = canvasDraw.height / rect.height;   // Коэффициент масштабирования по Y
+        
+            if (rectDots.length === 2 & editBoxBool){
+                removeBox();
+                defaultValues();
+            }
+            console.log('clickDraw')
+            if (rectDots.length < 2 & editBoxBool){
+            // if (rectDots.length < 2 && editBoxBool){
+                let x = parseInt((e.clientX - rect.left) * scaleX);
+                let y = parseInt((e.clientY - rect.top) * scaleY) ;
+                console.log("x: " + x + " y: " + y);
+                rectDots.push([x,y]);
+                ctxDraw.moveTo(x, y);
+                drawCircle(ctxDraw, x, y, highlightColor);
+            }
+            if (rectDots.length == 2 & !rectDrawn){
+                drawRect(ctxDraw, highlightColor);
+                curBox = boxes.get(currentBoxID)
+                boxes.set(currentBoxID, [curBox[0], curBox[1], [coordsToPercent()], curBox[3]])
+            }
+        })
+    }
+    function drawTextDiv(key){
+        let rect = canvasDraw.getBoundingClientRect(); 
+        let scaleX = canvasDraw.width / rect.width;     // Коэффициент масштабирования по X
+        let scaleY = canvasDraw.height / rect.height;
+        console.log('coords_rect', rect.left, rect.top)
+        let infoPopup = $('#popup-info')[0]
+        let box = boxes.get(key)
+        let coords = percentToCoords(box[2][0])
+        let text = box[1]
+        let w = textWidth(text)
+        // console.log(infoPopup)
+        if (text.length > 0){
+            infoPopup.textContent = text;
+            infoPopup.style.width - `${w}px`;
+            // infoPopup.style.left = `${((e.clientX - rect.left)) + 10}px`;
+            // infoPopup.style.top = `${((e.clientY - rect.top) - 10) }px`;
+            // infoPopup.style.left = '0px'
+            // infoPopup.style.top = '0px'
+            
+            
+            infoPopup.style.backgroundColor = 'rgb(240,237,235)'
+            infoPopup.style.borderRadius = '5px'
+            // infoPopup.style.border = '1px solid rgb(0,0,0)'
+            infoPopup.style.padding = '2px 6px'
+            // infoPopup.style.display = 'block'
+            $('#popup-info').fadeIn(500)
+
+            console.log('cccooo', coords[2], rect.width*scaleX)
+            if (coords[2] > rect.width*scaleX/2){
+                console.log('cheche')
+                infoPopup.style.left = null
+                infoPopup.style.right = `20px`
+                infoPopup.style.top = `10px`
+            }
+            else {
+                infoPopup.style.right = null
+                infoPopup.style.left = `20px`
+                infoPopup.style.top = `10px` 
+            }
+            textDrawn = true;
+        }
+        
+    }
+    function saveCanvas(){
+        ctx.drawImage(canvasDraw, 0, 0);
+        ctxDraw.clearRect(0, 0, canvasDraw.width, canvasDraw.height);
+    }
+    function clearCanvas(currentCtx=ctxDraw, warning){
+        let permision = true
+        if (warning){
+            permision = confirm('Удалятся все координаты боксов, продолжить?')
+        }
+        currentCtx.clearRect(0, 0, canvas.width, canvas.height);
+        defaultValues();
+    }
+    function displayBoxList(){
+        boxes.forEach(function(val, key, map){
+            defaultValues()
+            coords = val[2][0]
+            console.log('asdfasd',val[2][0])
+            if (coords){
+                editBoxBool = true;
+                console.log(coords)
+                setRectDots(coords);
+                drawRect(ctx);
+                defaultValues();
+                editBoxBool = false;
+            }
+        })
+    }
+    function closeBoxTarget(){
+        let curBox = boxes.get(currentBoxID)
+        if (rectDots.length === 2){
+            console.log('fff', rectDots, coordsToPercent())
+            boxes.set(currentBoxID, [curBox[0], curBox[1], [coordsToPercent()], curBox[3]])
+            highlightRect(ctxDraw, defaultColor);
+            // defaultValues();
+        }
+        clearCanvas(ctxDraw, false);
+        clearCanvas(ctx, false);
+        editBoxBool = false;
+        $(`#${currentBoxID}`).css('background-color', 'rgb(240,237,235)')
+        currentBoxID = null;
+        displayBoxList()
+    }
+    // function drawTextField(key){
+
+    // }
+    function rectPointCollision(point, rect) {
+        return (
+            point[0] > rect[0] && point[0] < rect[2] &&
+            point[1] > rect[1] && point[1] < rect[3]
+        )
+    }
+    function checkMouse(){
+        let rect = canvasDraw.getBoundingClientRect();  // Получаем размеры канваса относительно окна
+        let scaleX = canvasDraw.width / rect.width;     // Коэффициент масштабирования по X
+        let scaleY = canvasDraw.height / rect.height;   // Коэффициент масштабирования по Y
+
+        $('#canvas_draw').mousemove(function(e){
+            if (!editBoxBool){
+                let x = parseInt((e.clientX - rect.left) * scaleX);
+                let y = parseInt((e.clientY - rect.top) * scaleY) ;
+                let trueCheck = false;
+                boxes.forEach((val, key) => {
+                    // console.log(val[2][0] !== null)
+                    if (val[2][0] !== null){
+                        if (rectPointCollision([x, y], percentToCoords(val[2][0]))){
+                            console.log(key)
+                            drawTextDiv(key, e)
+                            trueCheck = true;
+                            return
+                        }
+                        
+                    }    
+                })
+                console.log('truecheck', trueCheck)
+                if (!trueCheck){
+                    console.log('else')
+                    $('#popup-info').hide('fast')
+                    // [0].style.display = 'none'
+                    clearCanvas(ctxDraw, false);
+                    clearCanvas(ctx, false);
+                    displayBoxList()
+                    textDrawn = false;
+                }
+            }
+        })
+    }
+    function unclick(){
+        $(document).mouseup( function(e){ 
+            if (editBoxBool){
+                var input = $( ".inputField" ); 
+                if ( !$( ".inputField" ).is(e.target) && !$("#canvas_draw").is(e.target)){ 
+                    console.log('abs')
+                    closeBoxTarget()
+                }
+            
+
+                
+                // removeBox();
+                
+                
+                
+                // boxes.set(curBox[0], [curBox[1]])
+                
+                
+                
+                // && div.has(e.target).length === 0 ) { // и не по его дочерним элементам
+                // div.hide(); // скрываем его
+            }
+        });
+    }
+
+
+    // function checkChange(){
+    //     if 
+    //     $('.camValues').on('input', function(){
+    //         fieldsChanged = true;
+    //         $('#save').removeAttr('disabled')
+    //     });
+    // }
+
+    // checkChange()
+    drawUp()
+    unclick()
+    checkMouse()
+
+
+
+    {%if boxes%}
+        {%for box in boxes%}
+            boxes.set({{box.id}}, ['{{box.name}}', '{{box.description}}', [{{box.x1}}, {{box.y1}}, {{box.x2}}, {{box.y2}}]])
+        {%endfor%}
+        
+        addAllBoxes()
+    {%else%}
+        console.log($('.box-list')[0])
+        // console.log('onload')
+        $('.box-list')[0].style.display = 'none'
+    {%endif%}
+
+</script>
+{%endblock%}
